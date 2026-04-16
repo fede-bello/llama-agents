@@ -6,6 +6,7 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from llama_agents.server._runtime.server_runtime import ServerRuntimeDecorator
 from llama_agents.server._store.abstract_workflow_store import AbstractWorkflowStore
 from workflows import Workflow
+from workflows.errors import FailureInfo
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.runtime.types.internal_state import BrokerState
 from workflows.runtime.types.plugin import (
@@ -29,10 +30,21 @@ def as_agentcore_async_task(
         step_name: str,
         event: Event,
         workflow: Workflow,
+        attempt: int = 1,
+        first_attempt_at: float = 0.0,
+        last_failure: FailureInfo | None = None,
     ) -> list[StepFunctionResult]:
         task_id = app.add_async_task(name)
         try:
-            results = await fn(state, step_name, event, workflow)
+            results = await fn(
+                state,
+                step_name,
+                event,
+                workflow,
+                attempt=attempt,
+                first_attempt_at=first_attempt_at,
+                last_failure=last_failure,
+            )
         finally:
             app.complete_async_task(task_id)
         return results

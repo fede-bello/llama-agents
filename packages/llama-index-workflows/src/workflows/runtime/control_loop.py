@@ -11,9 +11,10 @@ import logging
 import time
 import traceback
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from workflows.errors import (
+    FailureInfo,
     WorkflowCancelledByUser,
     WorkflowRuntimeError,
     WorkflowTimeoutError,
@@ -23,6 +24,7 @@ from workflows.events import (
     IdleReleasedEvent,
     InputRequiredEvent,
     StartEvent,
+    StepFailedEvent,
     StepState,
     StepStateChanged,
     StopEvent,
@@ -49,6 +51,8 @@ from workflows.runtime.types.internal_state import (
     EventAttempt,
     InProgressState,
     InternalStepWorkerState,
+    _failure_info_from_serialized,
+    _failure_info_to_serialized,
 )
 from workflows.runtime.types.named_task import (
     PendingPull,
@@ -84,6 +88,68 @@ from workflows.runtime.types.ticks import (
     WorkflowTick,
 )
 from workflows.workflow import Workflow
+
+
+def _dump_event_safely(event: Event) -> dict[str, Any]:
+    """Best-effort JSON-safe dump of a triggering event.
+
+    Returns the event's JSON-mode model_dump on success, or a fallback marker
+    dict if the event cannot be serialized. Construction never raises.
+    """
+    try:
+        dumped = event.model_dump(mode="json")
+        if not isinstance(dumped, dict):
+            raise TypeError("model_dump did not return a dict")
+        return dumped
+    except Exception:
+        event_type = type(event)
+        try:
+            marker_repr = repr(event)
+        except Exception:
+            marker_repr = f"<unrepresentable {event_type.__qualname__}>"
+        return {
+            "__non_serializable": True,
+            "type": event_type.__qualname__,
+            "repr": marker_repr,
+        }
+
+
+def _build_step_failed_event(
+    step_name: str,
+    triggering_event: Event,
+    exception_type: str,
+    exception_message: str,
+    exc_traceback: str,
+    attempts: int,
+    elapsed_seconds: float,
+) -> StepFailedEvent:
+    event_cls = type(triggering_event)
+    input_event_type = f"{event_cls.__module__}.{event_cls.__qualname__}"
+    return StepFailedEvent(
+        step_name=step_name,
+        input_event_type=input_event_type,
+        input_event=_dump_event_safely(triggering_event),
+        exception_type=exception_type,
+        exception_message=exception_message,
+        traceback=exc_traceback,
+        attempt=attempts,
+        elapsed_seconds=elapsed_seconds,
+    )
+
+
+def _build_failure_info(exception: BaseException, failed_at: float) -> FailureInfo:
+    """Build a FailureInfo snapshot mirroring WorkflowFailedEvent's serialization shape."""
+    exc_type = type(exception)
+    exc_qualname = f"{exc_type.__module__}.{exc_type.__qualname__}"
+    exc_traceback = "".join(
+        traceback.format_exception(exc_type, exception, exception.__traceback__)
+    )
+    return FailureInfo(
+        exception_type=exc_qualname,
+        exception_message=str(exception),
+        traceback=exc_traceback,
+        failed_at=failed_at,
+    )
 
 
 def _is_shutdown_error(e: BaseException) -> bool:
@@ -214,6 +280,9 @@ class _ControlLoopRunner:
                     step_name=command.step_name,
                     event=command.event,
                     workflow=self.workflow,
+                    attempt=worker.attempts + 1,
+                    first_attempt_at=worker.first_attempt_at,
+                    last_failure=worker.last_failure,
                 )
                 # Return result for main loop to process
                 return TickStepResult(
@@ -252,6 +321,7 @@ class _ControlLoopRunner:
                 step_name=command.step_name,
                 attempts=command.attempts,
                 first_attempt_at=command.first_attempt_at,
+                last_failure=_failure_info_to_serialized(command.last_failure),
             )
             if command.delay is not None and command.delay > 0:
                 now = await self.adapter.get_now()
@@ -620,6 +690,7 @@ def rewind_in_progress(
                     event=in_progress.event,
                     attempts=in_progress.attempts,
                     first_attempt_at=in_progress.first_attempt_at,
+                    last_failure=in_progress.last_failure,
                 ),
             )
         step_state.in_progress = []
@@ -730,6 +801,7 @@ def _process_step_result_tick(
             else:
                 delay = None
             if delay is not None:
+                failure_info = _build_failure_info(result.exception, result.failed_at)
                 commands.append(
                     CommandQueueEvent(
                         event=tick.event,
@@ -737,11 +809,10 @@ def _process_step_result_tick(
                         step_name=tick.step_name,
                         attempts=this_execution.attempts + 1,
                         first_attempt_at=this_execution.first_attempt_at,
+                        last_failure=failure_info,
                     )
                 )
             else:
-                # Publish a WorkflowFailedEvent to inform stream consumers about the failure
-                state.is_running = False
                 exception = result.exception
                 exc_type = type(exception)
                 exc_module = exc_type.__module__
@@ -753,21 +824,49 @@ def _process_step_result_tick(
                 )
                 total_attempts = this_execution.attempts + 1
                 elapsed = result.failed_at - this_execution.first_attempt_at
-                commands.append(
-                    CommandPublishEvent(
-                        event=WorkflowFailedEvent(
-                            step_name=tick.step_name,
-                            exception_type=exc_qualname,
-                            exception_message=str(exception),
-                            traceback=exc_traceback,
-                            attempts=total_attempts,
-                            elapsed_seconds=elapsed,
+
+                catch_error_name = state.config.catch_error_step_name
+                should_route = (
+                    catch_error_name is not None and tick.step_name != catch_error_name
+                )
+                if should_route:
+                    # Route to the catch-error handler. Keep workflow running so
+                    # the handler can produce either a StopEvent or a new failure.
+                    step_failed_event = _build_step_failed_event(
+                        step_name=tick.step_name,
+                        triggering_event=tick.event,
+                        exception_type=exc_qualname,
+                        exception_message=str(exception),
+                        exc_traceback=exc_traceback,
+                        attempts=total_attempts,
+                        elapsed_seconds=elapsed,
+                    )
+                    commands.append(
+                        CommandQueueEvent(
+                            event=step_failed_event,
+                            step_name=catch_error_name,
                         )
                     )
-                )
-                commands.append(
-                    CommandFailWorkflow(step_name=tick.step_name, exception=exception)
-                )
+                else:
+                    # Publish a WorkflowFailedEvent to inform stream consumers about the failure
+                    state.is_running = False
+                    commands.append(
+                        CommandPublishEvent(
+                            event=WorkflowFailedEvent(
+                                step_name=tick.step_name,
+                                exception_type=exc_qualname,
+                                exception_message=str(exception),
+                                traceback=exc_traceback,
+                                attempts=total_attempts,
+                                elapsed_seconds=elapsed,
+                            )
+                        )
+                    )
+                    commands.append(
+                        CommandFailWorkflow(
+                            step_name=tick.step_name, exception=exception
+                        )
+                    )
         elif isinstance(result, AddCollectedEvent):
             # The current state of collected events.
             collected_events = state.workers[
@@ -911,6 +1010,7 @@ def _add_or_enqueue_event(
                 shared_state=shared_state,
                 attempts=event.attempts or 0,
                 first_attempt_at=event.first_attempt_at or now_seconds,
+                last_failure=event.last_failure,
             )
         )
         commands.append(CommandRunWorker(step_name=step_name, event=event.event, id=id))
@@ -986,6 +1086,7 @@ def _process_add_event_tick(
                     event=tick.event,
                     attempts=tick.attempts,
                     first_attempt_at=tick.first_attempt_at,
+                    last_failure=_failure_info_from_serialized(tick.last_failure),
                 ),
                 step_name,
                 state.workers[step_name],

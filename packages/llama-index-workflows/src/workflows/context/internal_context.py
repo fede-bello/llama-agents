@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import Counter, defaultdict
 from typing import TYPE_CHECKING, Any, Coroutine, Generic, TypeVar, cast
 
 from workflows.context.context_types import MODEL_T
 from workflows.context.state_store import StateStore
-from workflows.errors import WorkflowRuntimeError
+from workflows.errors import RetryInfo, WorkflowRuntimeError
 from workflows.runtime.types.results import (
     AddCollectedEvent,
     AddWaiter,
@@ -201,3 +202,24 @@ class InternalContext(Generic[MODEL_T]):
         """Write an event to the published event stream."""
         if ev is not None:
             self._execute_task(self._internal_adapter.write_to_event_stream(ev))
+
+    def retry_info(self) -> RetryInfo:
+        """Snapshot of the currently-executing step's retry state.
+
+        Returns a `RetryInfo(attempt=1, elapsed_seconds=0.0, last_failure=None)`
+        on the first attempt. After a retry it reflects the current attempt
+        number, seconds since the first attempt, and the most recent failure.
+
+        Raises:
+            WorkflowRuntimeError: If called outside of a step function.
+        """
+        step_ctx = self._get_step_ctx(fn="retry_info")
+        if step_ctx.attempt <= 1 or not step_ctx.first_attempt_at:
+            elapsed = 0.0
+        else:
+            elapsed = max(0.0, time.time() - step_ctx.first_attempt_at)
+        return RetryInfo(
+            attempt=step_ctx.attempt,
+            elapsed_seconds=elapsed,
+            last_failure=step_ctx.last_failure,
+        )

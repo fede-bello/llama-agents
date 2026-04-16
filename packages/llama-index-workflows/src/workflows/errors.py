@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 LlamaIndex Inc.
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+
 
 class WorkflowValidationError(Exception):
     """Raised when the workflow configuration or step signatures are invalid."""
@@ -42,3 +46,39 @@ class ContextStateError(Exception):
     - ExternalContext: During run, for handler/external code
     - InternalContext: During run, for step execution
     """
+
+
+@dataclass(frozen=True)
+class FailureInfo:
+    """Describes a single failed step attempt.
+
+    Attributes:
+        exception_type: Fully qualified module + qualname of the exception class.
+        exception_message: `str(exception)` of the raised exception.
+        traceback: Joined output of `traceback.format_exception(...)`.
+        failed_at: Unix timestamp when the failure occurred.
+    """
+
+    exception_type: str
+    exception_message: str
+    traceback: str
+    failed_at: float
+
+
+@dataclass(frozen=True)
+class RetryInfo:
+    """Snapshot of the currently-executing step's retry state.
+
+    Returned by `Context.retry_info()`. On the first attempt `attempt` is 1,
+    `elapsed_seconds` is 0.0 and `last_failure` is `None`. On subsequent
+    retries `last_failure` describes the most recent prior failure.
+
+    Attributes:
+        attempt: 1-based attempt number of the currently-executing step.
+        elapsed_seconds: Seconds since the first attempt began.
+        last_failure: Information about the most recent prior failure, or None.
+    """
+
+    attempt: int
+    elapsed_seconds: float
+    last_failure: FailureInfo | None

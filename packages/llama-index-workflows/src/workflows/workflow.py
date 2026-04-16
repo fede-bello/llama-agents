@@ -29,6 +29,7 @@ from .events import (
     HumanResponseEvent,
     InputRequiredEvent,
     StartEvent,
+    StepFailedEvent,
     StopEvent,
 )
 from .handler import WorkflowHandler
@@ -148,6 +149,7 @@ class Workflow(metaclass=WorkflowMeta):
         # Detect StartEvent issues before StopEvent for clearer guidance
         self._start_event_class = self._ensure_start_event_class()
         self._stop_event_class = self._ensure_stop_event_class()
+        self._catch_error_step_name = self._ensure_catch_error_step()
         self._events = self._ensure_events_collected()
         # Resource management
         self._resource_manager = resource_manager or ResourceManager()
@@ -341,6 +343,38 @@ class Workflow(metaclass=WorkflowMeta):
             raise WorkflowConfigurationError(msg)
         else:
             return stop_events_found.pop()
+
+    def _ensure_catch_error_step(self) -> str | None:
+        """Validate 0 or 1 @catch_error handlers and their return types.
+
+        Returns the catch-error step name, or None if none is registered.
+        Raises `WorkflowValidationError` if multiple catch-error handlers are
+        defined or the handler has a non-StopEvent return type.
+        """
+        catch_error_steps: list[str] = []
+        for name, step_func in self._get_steps().items():
+            if step_func._step_config.role == "catch_error":
+                catch_error_steps.append(name)
+
+        if len(catch_error_steps) > 1:
+            names = ", ".join(sorted(catch_error_steps))
+            raise WorkflowValidationError(
+                f"Only one @catch_error handler is allowed per workflow, found {len(catch_error_steps)}: {names}"
+            )
+
+        if len(catch_error_steps) == 1:
+            step_name = catch_error_steps[0]
+            step_func = self._get_steps()[step_name]
+            for rt in step_func._step_config.return_types:
+                if rt is type(None):
+                    continue
+                if not (isinstance(rt, type) and issubclass(rt, StopEvent)):
+                    raise WorkflowValidationError(
+                        f"@catch_error handler '{step_name}' must only return StopEvent subclasses; "
+                        f"found {getattr(rt, '__name__', rt)}."
+                    )
+            return step_name
+        return None
 
     @property
     def stop_event_class(self) -> type[RunResultT]:
@@ -672,7 +706,10 @@ class Workflow(metaclass=WorkflowMeta):
         unconsumed_events = {
             x
             for x in unconsumed_events
-            if not issubclass(x, (InputRequiredEvent, HumanResponseEvent, StopEvent))
+            if not issubclass(
+                x,
+                (InputRequiredEvent, HumanResponseEvent, StopEvent, StepFailedEvent),
+            )
         }
         if unconsumed_events:
             names = ", ".join(ev.__name__ for ev in unconsumed_events)

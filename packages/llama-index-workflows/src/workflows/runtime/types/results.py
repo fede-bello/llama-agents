@@ -15,6 +15,7 @@ from typing import (
 )
 
 from pydantic import BaseModel, ConfigDict, model_serializer, model_validator
+from workflows.errors import FailureInfo
 from workflows.events import Event
 from workflows.runtime.types.serialization_helpers import (
     SerializableEvent,
@@ -40,6 +41,12 @@ class StepWorkerContext:
     state: StepWorkerState
     # add commands here to mutate the internal worker state after step execution
     returns: Returns
+    # 1-based attempt counter for the currently-executing step.
+    attempt: int = 1
+    # Unix timestamp of the first attempt of this event.
+    first_attempt_at: float = 0.0
+    # Most recent prior failure when this is a retry, or None.
+    last_failure: FailureInfo | None = None
 
 
 @dataclass(frozen=True)

@@ -60,6 +60,15 @@ class SerializedContextV0(BaseModel):
     waiting_ids: list[str] = Field(default_factory=list)
 
 
+class SerializedFailureInfo(BaseModel):
+    """Serialized representation of FailureInfo."""
+
+    exception_type: str
+    exception_message: str
+    traceback: str
+    failed_at: float
+
+
 class SerializedEventAttempt(BaseModel):
     """Serialized representation of an EventAttempt with retry information."""
 
@@ -69,6 +78,8 @@ class SerializedEventAttempt(BaseModel):
     attempts: int = 0
     # Unix timestamp of first attempt, or None if not yet attempted
     first_attempt_at: float | None = None
+    # Most recent failure when this event is scheduled for retry, if any.
+    last_failure: SerializedFailureInfo | None = None
 
 
 class SerializedWaiter(BaseModel):

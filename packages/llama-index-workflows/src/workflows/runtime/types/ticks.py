@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Discriminator, TypeAdapter
+from workflows.context.context_types import SerializedFailureInfo
 from workflows.runtime.types.results import StepFunctionResult
 from workflows.runtime.types.serialization_helpers import SerializableEvent
 
@@ -42,6 +43,7 @@ class TickAddEvent(BaseModel):
     step_name: str | None = None
     attempts: int | None = None
     first_attempt_at: float | None = None
+    last_failure: SerializedFailureInfo | None = None
 
 
 class TickCancelRun(BaseModel):

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from workflows.errors import FailureInfo
 from workflows.events import Event, StopEvent
 
 
@@ -35,6 +36,7 @@ class CommandQueueEvent:
     delay: float | None = None
     attempts: int | None = None
     first_attempt_at: float | None = None
+    last_failure: FailureInfo | None = None
 
 
 @dataclass(frozen=True)

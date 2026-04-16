@@ -22,7 +22,7 @@ from llama_index_instrumentation.events.span import SpanDropEvent
 from llama_index_instrumentation.span import active_span_id
 from workflows._event_summary import summarize_event
 from workflows.decorators import P, StepConfig
-from workflows.errors import WorkflowCancelledByUser, WorkflowRuntimeError
+from workflows.errors import FailureInfo, WorkflowCancelledByUser, WorkflowRuntimeError
 from workflows.events import (
     Event,
     StartEvent,
@@ -108,6 +108,9 @@ class StepWorkerFunction(Protocol):
         step_name: str,
         event: Event,
         workflow: Workflow,
+        attempt: int = 1,
+        first_attempt_at: float = 0.0,
+        last_failure: FailureInfo | None = None,
     ) -> Awaitable[list[StepFunctionResult]]: ...
 
 
@@ -162,6 +165,9 @@ def as_step_worker_function(
         step_name: str,
         event: Event,
         workflow: Workflow,
+        attempt: int = 1,
+        first_attempt_at: float = 0.0,
+        last_failure: FailureInfo | None = None,
     ) -> list[StepFunctionResult]:
         from workflows.context.context import Context
 
@@ -169,7 +175,13 @@ def as_step_worker_function(
         returns = Returns(return_values=[])
 
         token = StepWorkerStateContextVar.set(
-            StepWorkerContext(state=state, returns=returns)
+            StepWorkerContext(
+                state=state,
+                returns=returns,
+                attempt=attempt,
+                first_attempt_at=first_attempt_at,
+                last_failure=last_failure,
+            )
         )
         ctx_token = InternalContextVar.set(weakref.ref(internal_context))
 

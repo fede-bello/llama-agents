@@ -26,6 +26,7 @@ from workflows.context.pre_context import PreContext
 from workflows.errors import (
     ContextSerdeError,
     ContextStateError,
+    RetryInfo,
     WorkflowRuntimeError,
 )
 from workflows.events import (
@@ -573,6 +574,29 @@ class Context(Generic[MODEL_T]):
         return await self._require_internal(fn="wait_for_event").wait_for_event(
             event_type, waiter_event, waiter_id, requirements, timeout
         )
+
+    def retry_info(self) -> RetryInfo:
+        """Return a snapshot of the currently-executing step's retry state.
+
+        Returns:
+            RetryInfo: attempt number (1-based), seconds since the first attempt,
+            and information about the most recent prior failure (or `None` on
+            the first attempt).
+
+        Raises:
+            WorkflowRuntimeError: If called outside of a step function.
+
+        Examples:
+            ```python
+            @step(retry_policy=ConstantDelay(maximum_attempts=3, delay=0))
+            async def flaky(self, ctx: Context, ev: StartEvent) -> StopEvent:
+                info = ctx.retry_info()
+                if info.last_failure is not None:
+                    logger.info("retry %d: %s", info.attempt, info.last_failure.exception_message)
+                ...
+            ```
+        """
+        return self._require_internal(fn="retry_info").retry_info()
 
     def write_event_to_stream(self, ev: Event | None) -> None:
         """Enqueue an event for streaming to [WorkflowHandler]](workflows.handler.WorkflowHandler).

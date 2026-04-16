@@ -291,6 +291,36 @@ class WorkflowFailedEvent(StopEvent):
     elapsed_seconds: float
 
 
+class StepFailedEvent(Event):
+    """Delivered to a `@catch_error` handler when a step exhausts its retries.
+
+    The handler may inspect the fields to decide how to recover. Returning a
+    `StopEvent` completes the workflow successfully; raising from the handler
+    propagates the new exception and fails the workflow.
+
+    Attributes:
+        step_name: The name of the step that failed.
+        input_event_type: Fully qualified type name of the triggering event.
+        input_event: Best-effort JSON-safe dump of the triggering event. For
+            events that cannot be serialized, this is a fallback marker dict:
+            `{"__non_serializable": True, "type": ..., "repr": ...}`.
+        exception_type: Fully qualified type name of the raised exception.
+        exception_message: `str(exception)`.
+        traceback: Joined `traceback.format_exception(...)` output.
+        attempt: Total number of attempts made before giving up.
+        elapsed_seconds: Seconds from first attempt to final failure.
+    """
+
+    step_name: str
+    input_event_type: str
+    input_event: dict[str, Any]
+    exception_type: str
+    exception_message: str
+    traceback: str
+    attempt: int
+    elapsed_seconds: float
+
+
 class InputRequiredEvent(Event):
     """Emitted when human input is required to proceed.
 

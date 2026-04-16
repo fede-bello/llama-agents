@@ -21,6 +21,7 @@ from typing import (
 from pydantic import BaseModel
 
 from .errors import WorkflowValidationError
+from .events import StepFailedEvent
 from .resource import ResourceDefinition
 from .utils import (
     inspect_signature,
@@ -36,6 +37,9 @@ WorkflowGraphCheck = Literal["reachability", "terminal_event", "dead_end"]
 StepGraphCheck = Literal["reachability", "dead_end"]
 
 
+StepRole = Literal["step", "catch_error"]
+
+
 @dataclasses.dataclass
 class StepConfig:
     accepted_events: list[Any]
@@ -47,6 +51,7 @@ class StepConfig:
     resources: list[ResourceDefinition]
     context_state_type: type[BaseModel] | None = None
     skip_graph_checks: list[StepGraphCheck] = dataclasses.field(default_factory=list)
+    role: StepRole = "step"
 
 
 P = ParamSpec("P")
@@ -216,6 +221,49 @@ def _apply_step_decorator(
         workflow.add_step(func)
 
     return func
+
+
+def catch_error(func: Callable[P, R]) -> StepFunction[P, R]:
+    """Mark a method as the terminal handler for steps that exhaust their retries.
+
+    A workflow may register at most one `@catch_error` handler. When any other
+    step exhausts its retry policy, a
+    [StepFailedEvent][workflows.events.StepFailedEvent] is routed to this
+    handler. Returning a [StopEvent][workflows.events.StopEvent] completes the
+    workflow successfully; raising propagates the exception and fails the
+    workflow.
+
+    The decorated function must accept `StepFailedEvent` as its event parameter
+    and return a `StopEvent` subclass.
+
+    Examples:
+        ```python
+        from workflows import Workflow, catch_error, Context
+        from workflows.events import StepFailedEvent, StopEvent
+
+        class MyFlow(Workflow):
+            @catch_error
+            async def finalize(self, ctx: Context, ev: StepFailedEvent) -> StopEvent:
+                return StopEvent(result={"failed_step": ev.step_name})
+        ```
+    """
+    localns = _capture_callsite_localns()
+    step_fn = make_step_function(
+        func,
+        num_workers=1,
+        retry_policy=None,
+        localns=localns,
+        skip_graph_checks=["reachability"],
+    )
+    accepted = step_fn._step_config.accepted_events
+    if len(accepted) != 1 or accepted[0] is not StepFailedEvent:
+        name = getattr(func, "__name__", repr(func))
+        raise WorkflowValidationError(
+            f"@catch_error handler '{name}' must accept StepFailedEvent "
+            f"as its event parameter."
+        )
+    step_fn._step_config.role = "catch_error"
+    return step_fn
 
 
 def _capture_decorator_localns() -> dict[str, Any]:
