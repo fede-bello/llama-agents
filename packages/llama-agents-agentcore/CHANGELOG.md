@@ -1,5 +1,11 @@
 # llama-agents-agentcore
 
+## 0.9.0
+
+### Minor Changes
+
+- 5976e22: Remove the unused AgentCore memory-backed store implementation.
+
 ## 0.8.19
 
 ### Patch Changes
